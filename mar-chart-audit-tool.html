@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MAR Chart Audit Tracker</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; color: #1a1a1a; }
+    h1 { margin-bottom: 8px; }
+    .card { border: 1px solid #dcdcdc; border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+    .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+    label { display: block; font-weight: 600; margin-bottom: 4px; }
+    input, select, textarea, button { width: 100%; padding: 8px; border-radius: 6px; border: 1px solid #c8c8c8; }
+    textarea { min-height: 90px; resize: vertical; }
+    button { background: #0b5ed7; color: white; border: none; cursor: pointer; }
+    button:hover { background: #084298; }
+    .btn-secondary { background: #6c757d; }
+    .btn-secondary:hover { background: #565e64; }
+    .table-wrap { overflow-x: auto; max-height: 70vh; border: 1px solid #ddd; border-radius: 8px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border: 1px solid #e5e5e5; padding: 8px; text-align: center; }
+    thead th { position: sticky; top: 0; background: #1f4e78; color: white; z-index: 1; }
+    td:first-child, th:first-child, td:nth-child(2), th:nth-child(2), td:nth-child(3), th:nth-child(3) { text-align: left; }
+    tr.complete { background: #e8f5e9; }
+    .small { color: #5f6368; font-size: 0.92rem; }
+  </style>
+</head>
+<body>
+  <h1>MAR Chart Audit Tracker</h1>
+  <p class="small">Track MAR chart completion for Monday to Sunday, every week of the year, for each placement.</p>
+
+  <div class="card">
+    <div class="controls">
+      <div>
+        <label for="year">Year</label>
+        <input id="year" type="number" min="2000" max="2100" />
+      </div>
+      <div>
+        <label for="placementSelect">Active placement</label>
+        <select id="placementSelect"></select>
+      </div>
+      <div>
+        <label>&nbsp;</label>
+        <button id="resetPlacement" class="btn-secondary">Reset active placement ticks</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <label for="placementInput">Placement names (one per line)</label>
+    <textarea id="placementInput" placeholder="Example:\nPlacement 1\nPlacement 2\nPlacement 3"></textarea>
+    <div class="controls" style="margin-top:10px;">
+      <button id="savePlacements">Save placements</button>
+      <button id="exportCsv" class="btn-secondary">Export active placement as CSV</button>
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    <table id="auditTable">
+      <thead>
+        <tr>
+          <th>Placement</th><th>Week #</th><th>Week range</th>
+          <th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th><th>Fri</th><th>Sat</th><th>Sun</th>
+          <th>Completion</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+<script>
+const storageKey = 'mar-audit-tool-v1';
+const dayKeys = ['mon','tue','wed','thu','fri','sat','sun'];
+
+function defaultState() {
+  const yr = new Date().getFullYear();
+  return { year: yr, placements: ['Placement A','Placement B'], activePlacement: 'Placement A', data: {} };
+}
+
+function loadState() {
+  try {
+    return { ...defaultState(), ...JSON.parse(localStorage.getItem(storageKey) || '{}') };
+  } catch {
+    return defaultState();
+  }
+}
+
+function saveState() {
+  localStorage.setItem(storageKey, JSON.stringify(state));
+}
+
+function isoWeekMondays(year) {
+  const mondays = [];
+  let week = 1;
+  while (true) {
+    const monday = isoToDate(year, week, 1);
+    if (!monday || monday.getFullYear() > year + 1) break;
+    mondays.push(monday);
+    week += 1;
+  }
+  return mondays;
+}
+
+function isoToDate(year, week, day) {
+  const simple = new Date(Date.UTC(year, 0, 4 + (week - 1) * 7));
+  const dow = simple.getUTCDay() || 7;
+  const isoMonday = new Date(simple);
+  isoMonday.setUTCDate(simple.getUTCDate() - dow + 1);
+  const result = new Date(isoMonday);
+  result.setUTCDate(isoMonday.getUTCDate() + (day - 1));
+  if (week > 53 || result.getUTCFullYear() < year - 1 || result.getUTCFullYear() > year + 1) return null;
+  if (week === 53) {
+    const jan1 = new Date(Date.UTC(year, 0, 1)).getUTCDay() || 7;
+    const leap = new Date(Date.UTC(year, 1, 29)).getUTCMonth() === 1;
+    const has53 = jan1 === 4 || (leap && jan1 === 3);
+    if (!has53) return null;
+  }
+  return result;
+}
+
+function fmtDate(d) {
+  return d.toISOString().slice(0,10);
+}
+
+function ensurePlacementData(name) {
+  const y = state.year;
+  if (!state.data[y]) state.data[y] = {};
+  if (!state.data[y][name]) state.data[y][name] = {};
+}
+
+function getWeekRecord(placement, week) {
+  ensurePlacementData(placement);
+  const y = state.year;
+  if (!state.data[y][placement][week]) {
+    state.data[y][placement][week] = Object.fromEntries(dayKeys.map(k => [k, false]));
+  }
+  return state.data[y][placement][week];
+}
+
+function renderPlacementControls() {
+  document.getElementById('year').value = state.year;
+  const input = document.getElementById('placementInput');
+  input.value = state.placements.join('\n');
+  const select = document.getElementById('placementSelect');
+  select.innerHTML = '';
+  state.placements.forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p;
+    opt.textContent = p;
+    if (p === state.activePlacement) opt.selected = true;
+    select.appendChild(opt);
+  });
+}
+
+function renderTable() {
+  const tbody = document.querySelector('#auditTable tbody');
+  tbody.innerHTML = '';
+  const placement = state.activePlacement;
+  if (!placement) return;
+
+  const weeks = isoWeekMondays(state.year);
+  weeks.forEach((monday, idx) => {
+    const weekNum = idx + 1;
+    const sunday = new Date(monday); sunday.setUTCDate(monday.getUTCDate() + 6);
+    const rec = getWeekRecord(placement, weekNum);
+    const done = dayKeys.filter(d => rec[d]).length;
+
+    const tr = document.createElement('tr');
+    if (done === 7) tr.classList.add('complete');
+
+    const cells = [placement, String(weekNum), `${fmtDate(monday)} to ${fmtDate(sunday)}`];
+    cells.forEach(text => {
+      const td = document.createElement('td');
+      td.textContent = text;
+      tr.appendChild(td);
+    });
+
+    dayKeys.forEach((d) => {
+      const td = document.createElement('td');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = !!rec[d];
+      cb.addEventListener('change', () => {
+        rec[d] = cb.checked;
+        saveState();
+        renderTable();
+      });
+      td.appendChild(cb);
+      tr.appendChild(td);
+    });
+
+    const completion = document.createElement('td');
+    completion.textContent = `${Math.round((done / 7) * 100)}%`;
+    tr.appendChild(completion);
+
+    tbody.appendChild(tr);
+  });
+}
+
+function exportCsv() {
+  const placement = state.activePlacement;
+  const weeks = isoWeekMondays(state.year);
+  const rows = [['Placement','Week','Week Start','Week End','Mon','Tue','Wed','Thu','Fri','Sat','Sun','Completion %']];
+
+  weeks.forEach((monday, i) => {
+    const week = i + 1;
+    const end = new Date(monday); end.setUTCDate(monday.getUTCDate() + 6);
+    const rec = getWeekRecord(placement, week);
+    const done = dayKeys.filter(d => rec[d]).length;
+    rows.push([
+      placement,
+      week,
+      fmtDate(monday),
+      fmtDate(end),
+      ...dayKeys.map(d => rec[d] ? '1' : '0'),
+      String(Math.round((done / 7) * 100)),
+    ]);
+  });
+
+  const csv = rows.map(r => r.map(x => `"${String(x).replaceAll('"', '""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `mar_audit_${placement.replace(/\s+/g,'_').toLowerCase()}_${state.year}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+let state = loadState();
+if (!state.placements.length) state.placements = ['Placement A'];
+if (!state.placements.includes(state.activePlacement)) state.activePlacement = state.placements[0];
+
+renderPlacementControls();
+renderTable();
+
+document.getElementById('year').addEventListener('change', (e) => {
+  state.year = Number(e.target.value) || new Date().getFullYear();
+  saveState();
+  renderTable();
+});
+
+document.getElementById('placementSelect').addEventListener('change', (e) => {
+  state.activePlacement = e.target.value;
+  saveState();
+  renderTable();
+});
+
+document.getElementById('savePlacements').addEventListener('click', () => {
+  const placements = document.getElementById('placementInput').value
+    .split('\n').map(s => s.trim()).filter(Boolean);
+  if (!placements.length) return alert('Please enter at least one placement.');
+  state.placements = placements;
+  if (!placements.includes(state.activePlacement)) state.activePlacement = placements[0];
+  saveState();
+  renderPlacementControls();
+  renderTable();
+});
+
+document.getElementById('resetPlacement').addEventListener('click', () => {
+  if (!confirm('Reset all ticks for the active placement in this year?')) return;
+  ensurePlacementData(state.activePlacement);
+  state.data[state.year][state.activePlacement] = {};
+  saveState();
+  renderTable();
+});
+
+document.getElementById('exportCsv').addEventListener('click', exportCsv);
+</script>
+</body>
+</html>
